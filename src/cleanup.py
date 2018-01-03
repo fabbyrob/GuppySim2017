@@ -17,7 +17,6 @@ for f in args.files:
             continue
         sline = l.split()
         if len(sline) <= 2 and found:
-            #done reading data
             break
         if found:
             context = sline[0]
@@ -29,9 +28,31 @@ for f in args.files:
                 elif i%3 == 2:#large
                     large[context].append(float(item))
 
+def avg_within_sim(l):
+    new_l = []
+    for i in range(0, len(l), 2):
+        new_l.append(0.5*(l[i]+l[i+1]))
+    return new_l
+
 def avg(l):
     return sum(l)/float(len(l))
+#this calculates the std err, i'm just bad at naming and too lazy to change it
+def dev(l):
+    l_avg = avg(l)
+    sum_sqs = sum([(x - l_avg)**2 for x in l])
+    std_dev = (sum_sqs/float(len(l)-1))**0.5
+    return std_dev/(len(l)**0.5)
+    
+
+print("below are presented means and standard errors (in parentheses)")
+print("showing parameter %s" % (args.param))
+print("for %s simulations" %(len(small[small.keys()[2]])/2))
 print("context small medium large")
 for c in small.keys():
-    print("%s %s %s %s" % (c, avg(small[c]), avg(medium[c]), avg(large[c])))
+    small[c] = avg_within_sim(small[c])
+    medium[c] = avg_within_sim(medium[c])
+    large[c] = avg_within_sim(large[c])
+    print("%s %s (%s)  %s (%s) %s (%s)" % (c, avg(small[c]), dev(small[c]), 
+                                            avg(medium[c]), dev(medium[c]),
+                                            avg(large[c]), dev(medium[c])))
 

@@ -46,18 +46,21 @@ def main():
 
 time_output_file = None
 def outputTimestep(time, males, focal):
+    global time_output_file
     if args.time_output == "":
         return
     #output the time step number
     #the female each male is following
-    if time == 0:
+    if time_output_file == None:
         time_output_file = open(args.time_output, "w")
         header = "Timestep "+" ".join(["Male_"+str(i) if i != focal.ID else "Male*_"+str(i) for i in range(len(males))])
         time_output_file.write(header+"\n") 
     output = [time]+[None]*len(males)
     for m in males:
-        output[m.ID+1] = m.female.ID
-    time_output_file.write(" ".join(output)+"\n")
+        output[m.ID+1] = None
+        if m.female != None:
+            output[m.ID+1] = m.female.ID
+    time_output_file.write(" ".join(map(str, output))+"\n")
 
     if time == args.T*args.N:
         time_output_file.close()
@@ -83,7 +86,7 @@ def output(females, E, O, Q, O_prime):
         for f in females:
             e_out[f.ID+1] = E[f][i]
             o_out[f.ID+1] = O[f][i]
-            q_out[f.ID+1] = O[f][i]
+            q_out[f.ID+1] = Q[f][i]
             o_prime_out[f.ID+1] = O_prime[f][i]
         e_outs.append(e_out)
         o_outs.append(o_out)
@@ -143,14 +146,25 @@ def calcProfitability(size):
 BROTHER_R, NONKIN_R = (0.462, -0.077)
 CONTEXTS = [0, BROTHER_R, NONKIN_R, 1]
 CONTEXT_LABELS = {0:"no_rival", BROTHER_R:"brother", NONKIN_R:"nonkin", 1:"many_rivals"}
-def value(female, context):
+def value(female, context, P=True, C=True, R=True):
     V = female.profit
+    if P == False:
+        V = 1
+
     if context == 0:
         V *= 1
     elif context == 1:
         V *= 0
     else:
-        V *= (1 - args.c * (1+context))
+        effective_c = args.c
+        effective_context = context
+        
+        if C == False:
+            effective_c = 0
+        if R == False:
+            effective_context = 0
+
+        V += (1 - effective_c * (1 + effective_context))
     return V
 
 #expected effort of male towarfs a given female
@@ -178,23 +192,31 @@ def CalculateAllEfforts(females):
 #gets the value of the female in the current context
 #used for weighting male's choices
 #its really just syntactic sugar
-def currentEffort(focal_female, females, male):
-    return effort_landscape(focal_female, females, focal_female.getContext(male), male)
+def currentEffort(focal_female, females, male, assessing = False):
+    #use the appropriate male model of what is happening
+    if assessing:
+        P = args.p
+        R = args.r
+        C = args.no_c
 
+    
+        return effort_landscape(focal_female, females, focal_female.getContext(male), male, P, R, C)
+    #the p/r/c inputs are ignored for calculating effort for output
+    return effort_landscape(focal_female, females, focal_female.getContext(male), male)
 #expected efforts based on a given competitive landscape
 # E' in the text
 #uses the current landscape of females
 #E' = W*P/sum(W*P, females)
-def effort_landscape(focal_female, females, context, male):
-    V = value(focal_female, context)
+def effort_landscape(focal_female, females, context, male, P=True, R=True, C=True):
+    V = value(focal_female, context, P, C, R)
     denominator = V
 
     for f in females:
         if f == focal_female:
             continue
-        denominator += value(f, f.getContext(male))
+        denominator += value(f, f.getContext(male), P, C, R)
     
-    return V/denominator
+    return float(V)/denominator
 
 #for each context
 #assess the effort for this female given the current landscape
@@ -221,13 +243,13 @@ def timeWeightedEffort(male_choices, efforts, females):
     for f in females:
         for c in CONTEXTS:
             timesteps = getFemalesInContext(f, c, efforts)
-            focal_male_follows = [1 for followed_female, context in male_choices if followed_female == f and context == c]
-            time_followed = len(focal_male_follows)
             time_in_context = len(timesteps)
             if len(timesteps) > 0:
-                effort = sum(timesteps)/len(timesteps)
+                effort = sum(timesteps)/time_in_context
             else:
                 effort = 0
+            #correct for teh amount of the trial she was availabel in this context
+            effort /= time_in_context/float(len(efforts))
             weighted_efforts[f].append(effort)
 
     return weighted_efforts
@@ -308,7 +330,7 @@ class Male:
     def setFemaleWeights(self, females):
         self.female_weights = []
         for f in females:
-            self.female_weights.append(currentEffort(f, females, self)) 
+            self.female_weights.append(currentEffort(f, females, self, assessing=True)) 
 
     def pickFemale(self, females):
         #always reasses the females before chosing
@@ -316,10 +338,13 @@ class Male:
         #because they are picked in series and the context of 
         #each female changes as the males chose who to pursue
         self.setFemaleWeights(females)
+        if sum(self.female_weights) == 0: 
+            sys.stderr.write("%s ... %s\n" % (females, self.female_weights))
+            self.setFemaleWeights(females, 1)
         #check if the male stops following everyone
         new_target = None
         #if this is true then we are not stopping
-        if random.random > args.stop:
+        if random.random() > args.stop:
             #pick a female to pursue
             ps = [float(x)/sum(self.female_weights) for x in self.female_weights]
             new_target = random.choice(females, p=ps)
@@ -352,9 +377,10 @@ class Male:
 
 def parseArgs():
     parser = argparse.ArgumentParser(description="Runs simulation of a guppy mating trial")
-    parser.add_argument("--no_r", dest="r", action="store_false", default=True, help="if this flag is used relatedness is set to '0' for all competitive contexts when calculating female value.")
+    parser.add_argument("--no_r", dest="r", action="store_false", default=True, help="if this flag is used relatedness is set to '0' for all competitive contexts when males assess female value.")
+    parser.add_argument("--no_c", dest="no_c", action="store_false", default=True, help="if this flagis used then the 'C' parameter is set to 0 when males assess female value.")
     parser.add_argument("-c", type=float, default=0.47, help="The 'C' vaule used to calculate female value.")
-    parser.add_argument("--no_p", dest="p", action="store_false", default=True, help="If this flag is used female profitability is set to '1' for all females when calculating female value.")
+    parser.add_argument("--no_p", dest="p", action="store_false", default=True, help="If this flag is used female profitability is set to '1' for all females when males assess female value.")
     parser.add_argument("-T", type=int, default=500, help="The number of time blocks to simulate; one time block includes one step for each male. So there will be a total of T*N timesteps used in calculations and output.")
 
     parser.add_argument("-N", type=int, default = 6, help="The numbers of males and females in the trial.")
